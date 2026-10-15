@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Shoot HTML5 - Complete Arcade Version</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #000; 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            color: white;
+            overflow: hidden;
+        }
+        #gameContainer {
+            position: relative;
+            width: 800px;
+            height: 800px;
+        }
+        canvas {
+            background-color: #000; 
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #mediaOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: black;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+        #mediaVideo {
+            display: none;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="800" height="800"></canvas>
+    
+    <div id="mediaOverlay">
+        <img id="mediaGif" style="display:none; max-width:100%; max-height:100%;">
+        <video id="mediaVideo"></video>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const mediaOverlay = document.getElementById('mediaOverlay');
+    const mediaGif = document.getElementById('mediaGif');
+    const mediaVideo = document.getElementById('mediaVideo');
+
+    // --- AUDIO FILES & SYNTHESIZER ---
+    const bgmMenu = new Audio('ASTRO.mp3'); bgmMenu.volume = 0.8;
+    const bgmLevel1 = new Audio('HUMANOID.mp3'); bgmLevel1.volume = 0.8;
+    const bgmLevel2 = new Audio('CHASE_ME.mp3'); bgmLevel2.volume = 0.8;
+    const bgmLevel4 = new Audio('BIGCITY.mp3'); bgmLevel4.volume = 0.8;
+    
+    bgmMenu.loop = true; bgmLevel1.loop = true; bgmLevel2.loop = true; bgmLevel4.loop = true;
+
+    const sfxExplod14 = new Audio('EXPLOD14.WAV');
+    const sfxBonus = new Audio('BONUS2.WAV');
+    const sfxExplod01 = new Audio('EXPLOD01.WAV'); 
+
+    let currentBGM = null;
+    let interactedWithBrowser = false;
+    
+    // Web Audio API Synthesizer Context
+    let audioCtx = null;
+
+    function initWebAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    // Generates a 16-bit style laser "pew" on the fly
+    function playPlayerLaserSound() {
+        if (!audioCtx) return;
+
+        let t = audioCtx.currentTime;
+        let osc = audioCtx.createOscillator();
+        let oscGain = audioCtx.createGain();
+
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(880, t); 
+        osc.frequency.exponentialRampToValueAtTime(110, t + 0.15); 
+        
+        oscGain.gain.setValueAtTime(0.15, t); 
+        oscGain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+        
+        osc.connect(oscGain);
+        oscGain.connect(audioCtx.destination);
+        
+        osc.start(t);
+        osc.stop(t + 0.15);
+    }
+
+    // Generates a 16-bit style crash/explosion on the fly
+    function playEnemyExplosionSound() {
+        if (!audioCtx) return;
+
+        let t = audioCtx.currentTime;
+        let duration = 0.6; // Longer duration for an explosion
+        
+        // 1. The "Crunch/Rumble" 
+        let osc = audioCtx.createOscillator();
+        let oscGain = audioCtx.createGain();
+        osc.type = 'sawtooth'; // Harsher waveform than sine
+        osc.frequency.setValueAtTime(100, t);
+        osc.frequency.exponentialRampToValueAtTime(10, t + duration);
+        
+        oscGain.gain.setValueAtTime(0.8, t);
+        oscGain.gain.exponentialRampToValueAtTime(0.01, t + duration);
+        
+        osc.connect(oscGain);
+        oscGain.connect(audioCtx.destination);
+        
+        // 2. The "Blast" (Filtered white noise)
+        let bufferSize = audioCtx.sampleRate * duration; 
+        let buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        let data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1; 
+        }
+        
+        let noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+        
+        let noiseFilter = audioCtx.createBiquadFilter();
+        noiseFilter.type = 'lowpass';
+        noiseFilter.frequency.setValueAtTime(3000, t); // High crack start
+        noiseFilter.frequency.exponentialRampToValueAtTime(50, t + duration); // Sweep down to deep rumble
+        
+        let noiseGain = audioCtx.createGain();
+        noiseGain.gain.setValueAtTime(0.8, t); 
+        noiseGain.gain.exponentialRampToValueAtTime(0.01, t + duration);
+        
+        noise.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(audioCtx.destination);
+        
+        osc.start(t);
+        noise.start(t);
+        osc.stop(t + duration);
+        noise.stop(t + duration);
+    }
+
+    function playSound(snd) {
+        if (!interactedWithBrowser) return;
+        let clone = snd.cloneNode();
+        clone.play().catch(e => {}); 
+    }
+
+    function updateBGM() {
+        if (!interactedWithBrowser) return;
+
+        let targetBGM = null;
+
+        if (gameState === 'START_MENU' || gameState === 'HIGH_SCORE' || gameState === 'ARCADE_MENU') {
+            targetBGM = bgmMenu;
+        } else if (gameState === 'MEDIA_PLAYING') {
+            if (mediaGif.src.includes('Get_Ready') || mediaGif.src.includes('Game_Over')) {
+                targetBGM = bgmMenu;
+            } else {
+                targetBGM = null; 
+            }
+        } else if (gameState === 'PLAYING') {
+            let lvl = currentLevel;
+            if ([1, 3, 5, 7, 9, 11].includes(lvl)) targetBGM = bgmLevel1;
+            else if ([2, 6, 10].includes(lvl)) targetBGM = bgmLevel2;
+            else if ([4, 8, 12].includes(lvl)) targetBGM = bgmLevel4;
+            else targetBGM = bgmLevel1; 
+        } else if (gameState === 'PAUSED' || gameState === 'ENTER_NAME') {
+            targetBGM = currentBGM; 
+        }
+
+        if (currentBGM !== targetBGM) {
+            if (currentBGM) currentBGM.pause();
+            currentBGM = targetBGM;
+            if (currentBGM) {
+                currentBGM.currentTime = 0;
+                currentBGM.play().catch(e => {}); 
+            }
+        }
+    }
+
+    function trackInteraction() {
+        if (!interactedWithBrowser) {
+            interactedWithBrowser = true;
+            initWebAudio();
+            updateBGM(); 
+        }
+    }
+    
+    document.addEventListener('click', trackInteraction, {once: true});
+
+    // --- IMAGES ---
+    const playerImg = new Image(); playerImg.src = 'Good guys ship.jpg';
+    const asteroidImg = new Image(); asteroidImg.src = 'asteroid.png';
+    const lifeIconImg = new Image(); lifeIconImg.src = 'life_icon.png'; 
+    const highScoreBgImg = new Image(); highScoreBgImg.src = 'high_score_image.jpg';
+    
+    const nwsLogoImg = new Image(); nwsLogoImg.src = 'NWS small Black BG.jpg';
+    const spaceShootLogoImg = new Image(); spaceShootLogoImg.src = 'SpaceShoot LOGO2.jpg';
+
+    const blueLaserImg = new Image(); blueLaserImg.src = 'blue_laser.png';
+    const sideBlueLaserImg = new Image(); sideBlueLaserImg.src = 'side_blue_laser.png'; 
+    const enemyLaserImg = new Image(); enemyLaserImg.src = 'laser.png';
+    const purpleBlobImg = new Image(); purpleBlobImg.src = 'purple_blob.png';
+
+    const greenEnemyImg = new Image(); greenEnemyImg.src = 'Bad guys ship.jpg'; 
+    const blueEnemyImg = new Image(); blueEnemyImg.src = 'blue_enemy.jpg';
+    const redEnemyImg = new Image(); redEnemyImg.src = 'red_enemy.jpg';
+    const greyEnemyImg = new Image(); greyEnemyImg.src = 'grey_enemy.jpg';
+    
+    const redSpiderImg = new Image(); redSpiderImg.src = 'Spider enemy.jpg'; 
+    const goldSpiderImg = new Image(); goldSpiderImg.src = 'gold_spider.jpg';
+    const blueSpiderImg = new Image(); blueSpiderImg.src = 'blue_spider.jpg';
+
+    // --- GAME STATE ---
+    let gameState = 'START_MENU'; 
+    let score = 0;
+    let lives = 3;
+    let currentLevel = 1;
+    let levelTransition = false;
+    
+    let initials = ['A', 'A', 'A'];
+    let currentInitialIndex = 0;
+    let inputCooldown = 0; 
+
+    let idleTimer = 0;
+    let isDemo = false;
+    let demoTimer = 0;
+    let highScoreTimer = 0;
+
+    let highScores = JSON.parse(localStorage.getItem('spaceShootScores')) || [
+        {name: 'CPU', score: 500}, {name: 'CPU', score: 300}, {name: 'CPU', score: 100}
+    ];
+
+    const player = {
+        x: canvas.width / 2 - 32, y: canvas.height - 130, 
+        width: 64, height: 64, speed: 5,
+        lasers: [], canFire: true, isInvulnerable: false
+    };
+
+    let enemies = [];
+    let enemyLasers = [];
+    let asteroids = [];
+
+    // --- MEDIA PLAYER FUNCTION ---
+    function playMedia(type, src, nextState, duration = 3000) {
+        gameState = 'MEDIA_PLAYING';
+        
+        mediaOverlay.style.display = 'flex';
+        mediaGif.style.display = 'none';
+        mediaVideo.style.display = 'none';
+
+        if (src === 'Ship_Destroyed.mp4') {
+            sfxExplod14.currentTime = 0;
+            sfxExplod14.loop = true;
+            sfxExplod14.play().catch(e => {});
+        }
+
+        if (type === 'gif') {
+            mediaGif.src = src + '?t=' + new Date().getTime(); 
+            mediaGif.style.display = 'block';
+            updateBGM(); 
+            setTimeout(() => { endMedia(nextState); }, duration);
+        } else if (type === 'video') {
+            mediaVideo.src = src;
+            mediaVideo.style.display = 'block';
+            updateBGM();
+            mediaVideo.play();
+            mediaVideo.onended = () => { endMedia(nextState); };
+        }
+    }
+
+    function endMedia(nextState) {
+        mediaOverlay.style.display = 'none';
+        mediaVideo.pause();
+        sfxExplod14.pause();
+        
+        if (nextState === 'PLAYING_RESET') {
+            isDemo = false;
+            resetGame();
+        } else {
+            gameState = nextState;
+            updateBGM(); 
+            if (nextState === 'START_MENU') idleTimer = 0; 
+        }
+    }
+
+    // --- INPUT HANDLING ---
+    const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, ArrowDown: false, Space: false, Enter: false };
+    
+    window.addEventListener('keydown', (e) => {
+        trackInteraction();
+
+        if (e.code === 'ArrowLeft') keys.ArrowLeft = true;
+        if (e.code === 'ArrowRight') keys.ArrowRight = true;
+        if (e.code === 'ArrowUp') keys.ArrowUp = true;
+        if (e.code === 'ArrowDown') keys.ArrowDown = true;
+        if (e.code === 'Space') {
+            keys.Space = true; 
+            if (gameState === 'PLAYING' && !isDemo) firePlayerLaser();
+            if (gameState === 'START_MENU') playMedia('gif', 'Get_Ready.gif', 'PLAYING_RESET', 6000); 
+        }
+        if (e.code === 'Enter') keys.Enter = true;
+        
+        if (e.code === 'KeyP' && e.ctrlKey) { 
+            e.preventDefault();
+            if (gameState === 'PLAYING') { gameState = 'PAUSED'; updateBGM(); }
+            else if (gameState === 'PAUSED') { gameState = 'PLAYING'; updateBGM(); }
+        }
+        if (e.code === 'Escape') { gameState = 'START_MENU'; updateBGM(); }
+        if (e.code === 'KeyR' && gameState === 'START_MENU') playMedia('gif', 'Get_Ready.gif', 'PLAYING_RESET', 6000);
+        if (e.code === 'KeyH' && gameState === 'START_MENU') {
+            gameState = 'HIGH_SCORE';
+            highScoreTimer = 0;
+            updateBGM();
+        }
+        if (e.code === 'KeyQ') { gameState = 'ARCADE_MENU'; updateBGM(); }
+        
+        if (e.code === 'Digit1') jumpToLevel(11);
+        if (e.code === 'Digit2') jumpToLevel(12);
+    });
+
+    window.addEventListener('keyup', (e) => {
+        if (e.code === 'ArrowLeft') keys.ArrowLeft = false;
+        if (e.code === 'ArrowRight') keys.ArrowRight = false;
+        if (e.code === 'ArrowUp') keys.ArrowUp = false;
+        if (e.code === 'ArrowDown') keys.ArrowDown = false;
+        if (e.code === 'Space') keys.Space = false;
+        if (e.code === 'Enter') keys.Enter = false;
+    });
+
+    // --- LEVEL SETUP ---
+    function loadCurrentLevel() {
+        enemies = []; enemyLasers = []; asteroids = []; player.lasers = [];
+        
+        let baseLevel = ((currentLevel - 1) % 4) + 1;
+        let speedMult = Math.ceil(currentLevel / 4);
+
+        if (baseLevel === 1) {
+            for (let row = 0; row < 2; row++) {
+                for (let col = 0; col < 8; col++) {
+                    enemies.push({ x: 100 + (col * 80), y: 50 + (row * 70), width: 50, height: 50, type: row === 0 ? 'green' : 'blue', vx: 0, vy: 0 });
+                }
+            }
+        } else if (baseLevel === 2) {
+            for (let i = 0; i < 3; i++) {
+                enemies.push({ x: canvas.width + (i * 150), y: 100 + (i * 80), width: 50, height: 50, type: 'red', vx: -3, vy: 0 });
+            }
+            asteroids.push({ x: 100, y: 100, width: 60, height: 60, vx: 3, vy: 3 });
+            asteroids.push({ x: 600, y: 200, width: 60, height: 60, vx: -4, vy: 2 });
+        } else if (baseLevel === 3) {
+            for (let col = 0; col < 8; col++) {
+                enemies.push({ x: 100 + (col * 80), y: 50, width: 50, height: 50, type: 'grey', vx: -2, vy: 0 });
+            }
+            for (let col = 0; col < 4; col++) {
+                enemies.push({ x: 180 + (col * 160), y: 130, width: 60, height: 40, type: 'red_spider', vx: 2, vy: 0 });
+            }
+            for (let col = 0; col < 3; col++) {
+                enemies.push({ x: 260 + (col * 160), y: 210, width: 60, height: 40, type: 'gold_spider', vx: 0, vy: 0 });
+            }
+        } else if (baseLevel === 4) {
+            const colors = ['green', 'red', 'blue', 'grey'];
+            for (let row = 0; row < 2; row++) {
+                for (let col = 0; col < 8; col++) {
+                    enemies.push({ x: 100 + (col * 80), y: 50 + (row * 70), width: 50, height: 50, type: colors[(row * 8 + col) % 4], vx: 0, vy: 0 });
+                }
+            }
+            for (let i = 0; i < 3; i++) {
+                enemies.push({ x: 200 + (i * 150), y: 250 + (i * 50), width: 60, height: 40, type: 'blue_spider', vx: 3, vy: 3 });
+            }
+            asteroids.push({ x: 100, y: 100, width: 60, height: 60, vx: 3, vy: 4 });
+            asteroids.push({ x: 400, y: 150, width: 60, height: 60, vx: -3, vy: 2 });
+            asteroids.push({ x: 700, y: 200, width: 60, height: 60, vx: -4, vy: 3 });
+        }
+
+        enemies.forEach(e => { e.vx *= speedMult; e.vy *= speedMult; });
+        asteroids.forEach(a => { a.vx *= speedMult; a.vy *= speedMult; });
+        
+        updateBGM(); 
+    }
+
+    function jumpToLevel(lvl) {
+        currentLevel = lvl;
+        gameState = 'PLAYING'; 
+        loadCurrentLevel();
+    }
+
+    // --- GLOBAL INPUT LOGIC ---
+    function processInputs() {
+        if (inputCooldown > 0) inputCooldown--;
+
+        let moveLeft = keys.ArrowLeft, moveRight = keys.ArrowRight;
+        let moveUp = keys.ArrowUp, moveDown = keys.ArrowDown;
+        let fire = keys.Space || keys.Enter;
+
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        const gp = gamepads[0];
+        if (gp) {
+            if (gp.axes[0] < -0.5 || gp.buttons[14]?.pressed) moveLeft = true;
+            if (gp.axes[0] > 0.5 || gp.buttons[15]?.pressed) moveRight = true;
+            if (gp.axes[1] < -0.5 || gp.buttons[12]?.pressed) moveUp = true;
+            if (gp.axes[1] > 0.5 || gp.buttons[13]?.pressed) moveDown = true;
+            if (gp.buttons[0]?.pressed) fire = true;
+            
+            if (moveLeft || moveRight || moveUp || moveDown || fire) trackInteraction();
+        }
+
+        let anyInput = moveLeft || moveRight || moveUp || moveDown || fire;
+
+        if (anyInput) {
+            idleTimer = 0; 
+            if (isDemo && (gameState === 'PLAYING' || gameState === 'HIGH_SCORE')) {
+                isDemo = false;
+                gameState = 'START_MENU';
+                updateBGM();
+                return;
+            }
+        }
+
+        if (gameState === 'START_MENU' && fire && inputCooldown <= 0) {
+            playMedia('gif', 'Get_Ready.gif', 'PLAYING_RESET', 6000);
+            inputCooldown = 30;
+        }
+
+        if (gameState === 'PLAYING' && !isDemo) {
+            if (moveLeft && player.x > 0) player.x -= player.speed;
+            if (moveRight && player.x < canvas.width - player.width) player.x += player.speed;
+        } 
+        else if (gameState === 'ENTER_NAME') {
+            if (moveLeft && inputCooldown <= 0) { currentInitialIndex = Math.max(0, currentInitialIndex - 1); inputCooldown = 15; }
+            if (moveRight && inputCooldown <= 0) { currentInitialIndex = Math.min(2, currentInitialIndex + 1); inputCooldown = 15; }
+            if (moveUp && inputCooldown <= 0) {
+                let code = initials[currentInitialIndex].charCodeAt(0);
+                initials[currentInitialIndex] = String.fromCharCode(code === 90 ? 65 : code + 1);
+                inputCooldown = 15;
+            }
+            if (moveDown && inputCooldown <= 0) {
+                let code = initials[currentInitialIndex].charCodeAt(0);
+                initials[currentInitialIndex] = String.fromCharCode(code === 65 ? 90 : code - 1);
+                inputCooldown = 15;
+            }
+            if (fire && inputCooldown <= 0) {
+                saveHighScore();
+                gameState = 'HIGH_SCORE';
+                inputCooldown = 30;
+                highScoreTimer = 0;
+                updateBGM();
+            }
+        }
+        else if (gameState === 'HIGH_SCORE' || gameState === 'ARCADE_MENU') {
+            if (fire && inputCooldown <= 0) {
+                isDemo = false;
+                idleTimer = 0;
+                playMedia('gif', 'Game_Over.gif', 'START_MENU', 6000); 
+                inputCooldown = 30;
+            }
+        }
+    }
+
+    function saveHighScore() {
+        let name = initials.join('');
+        highScores.push({name: name, score: score});
+        highScores.sort((a, b) => b.score - a.score); 
+        highScores = highScores.slice(0, 10); 
+        localStorage.setItem('spaceShootScores', JSON.stringify(highScores));
+    }
+
+    function resetGame() {
+        score = 0; lives = 3; currentLevel = 1;
+        initials = ['A', 'A', 'A']; currentInitialIndex = 0;
+        player.x = canvas.width / 2 - 32;
+        player.isInvulnerable = false;
+        
+        gameState = 'PLAYING'; 
+        loadCurrentLevel();
+    }
+
+    function firePlayerLaser() {
+        if (player.canFire && !levelTransition && gameState === 'PLAYING') {
+            let baseLevel = ((currentLevel - 1) % 4) + 1;
+            let laserW = baseLevel === 4 ? 40 : 10;
+            let laserH = baseLevel === 4 ? 15 : 20;
+
+            player.lasers.push({ x: player.x + player.width / 2 - laserW / 2, y: player.y, width: laserW, height: laserH, speed: 7 });
+            player.canFire = false;
+            
+            playPlayerLaserSound(); 
+            
+            setTimeout(() => player.canFire = true, 300); 
+        }
+    }
+
+    function enemyFireLogic() {
+        let speedMult = Math.ceil(currentLevel / 4);
+        let baseLevel = ((currentLevel - 1) % 4) + 1;
+        let fireChance = (baseLevel === 4 ? 0.06 : 0.03) * speedMult;
+
+        if (enemies.length > 0 && Math.random() < fireChance) { 
+            const e = enemies[Math.floor(Math.random() * enemies.length)];
+            let isSpider = e.type.includes('spider');
+            enemyLasers.push({
+                x: e.x + e.width / 2 - (isSpider ? 10 : 5), y: e.y + e.height,
+                width: isSpider ? 20 : 10, height: isSpider ? 20 : 20, speed: 4 * speedMult, isBlob: isSpider 
+            });
+        }
+    }
+
+    function takeDamage() {
+        if (player.isInvulnerable || isDemo) return; // Prevent damage entirely during demo
+        
+        lives -= 1;
+        playSound(sfxExplod01); 
+        
+        if (lives <= 0) {
+            playMedia('video', 'Ship_Destroyed.mp4', 'ENTER_NAME');
+        } else {
+            player.isInvulnerable = true;
+            setTimeout(() => player.isInvulnerable = false, 1500);
+        }
+    }
+
+    function update() {
+        processInputs();
+
+        if (gameState === 'START_MENU') {
+            idleTimer++;
+            if (idleTimer > 60 * 15) { 
+                isDemo = true;
+                demoTimer = 60 * 45; 
+                resetGame();
+            }
+        }
+
+        if (gameState === 'HIGH_SCORE') {
+            highScoreTimer++;
+            let maxScoreTime = isDemo ? (60 * 20) : (60 * 25);
+            
+            if (highScoreTimer > maxScoreTime) {
+                isDemo = false;
+                idleTimer = 0; 
+                playMedia('gif', 'Game_Over.gif', 'START_MENU', 6000);
+            }
+        }
+
+        if (gameState !== 'PLAYING') return;
+
+        // DEMO AI LOGIC
+        if (isDemo) {
+            demoTimer--;
+            let targetX = canvas.width / 2;
+            if (enemies.length > 0) targetX = enemies[0].x + enemies[0].width / 2;
+            
+            if (player.x + player.width/2 < targetX - 10) player.x += player.speed;
+            else if (player.x + player.width/2 > targetX + 10) player.x -= player.speed;
+            
+            if (Math.random() < 0.05) firePlayerLaser();
+
+            if (demoTimer <= 0) {
+                gameState = 'HIGH_SCORE';
+                highScoreTimer = 0;
+                updateBGM();
+            }
+        }
+
+        if (enemies.length === 0 && asteroids.length === 0 && !levelTransition) {
+            levelTransition = true;
+            enemyLasers = []; 
+            playSound(sfxBonus); 
+            
+            setTimeout(() => {
+                currentLevel++;
+                if (currentLevel > 12) {
+                    if (isDemo) {
+                        gameState = 'HIGH_SCORE';
+                        highScoreTimer = 0;
+                        updateBGM();
+                    } else {
+                        playMedia('video', 'Ship_Entry.mp4', 'ENTER_NAME');
+                    }
+                } else {
+                    loadCurrentLevel();
+                    levelTransition = false;
+                }
+            }, 3000); 
+        }
+
+        for (let i = player.lasers.length - 1; i >= 0; i--) {
+            player.lasers[i].y -= player.lasers[i].speed;
+            if (player.lasers[i].y < 0) player.lasers.splice(i, 1);
+        }
+
+        enemies.forEach(e => {
+            e.x += e.vx; e.y += e.vy;
+            if (e.type === 'blue_spider') {
+                if (e.x > canvas.width) e.x = -e.width;
+                if (e.x + e.width < 0) e.x = canvas.width;
+                if (e.y > canvas.height) e.y = -e.height;
+                if (e.y + e.height < 0) e.y = canvas.height;
+            } else {
+                if (e.vx < 0 && e.x + e.width < 0) e.x = canvas.width;
+                if (e.vx > 0 && e.x > canvas.width) e.x = -e.width; 
+            }
+        });
+
+        asteroids.forEach(a => {
+            a.x += a.vx; a.y += a.vy;
+            if (a.x <= 0 || a.x + a.width >= canvas.width) a.vx *= -1;
+            if (a.y <= 0 || a.y + a.height >= canvas.height) a.vy *= -1;
+        });
+
+        if (!levelTransition) enemyFireLogic();
+        for (let i = enemyLasers.length - 1; i >= 0; i--) {
+            enemyLasers[i].y += enemyLasers[i].speed;
+            if (enemyLasers[i].y > canvas.height) enemyLasers.splice(i, 1);
+        }
+
+        // --- COLLISIONS ---
+        for (let i = player.lasers.length - 1; i >= 0; i--) {
+            let pL = player.lasers[i];
+            let hitProjectile = false;
+            for (let j = enemyLasers.length - 1; j >= 0; j--) {
+                let eL = enemyLasers[j];
+                if (pL.x < eL.x + eL.width && pL.x + pL.width > eL.x && pL.y < eL.y + eL.height && pL.y + pL.height > eL.y) {
+                    enemyLasers.splice(j, 1); 
+                    hitProjectile = true;
+                    score += 5; 
+                    break;
+                }
+            }
+            if (hitProjectile) { player.lasers.splice(i, 1); continue; }
+        }
+
+        for (let i = player.lasers.length - 1; i >= 0; i--) {
+            let pL = player.lasers[i];
+            for (let j = enemies.length - 1; j >= 0; j--) {
+                let e = enemies[j];
+                if (pL.x < e.x + e.width && pL.x + pL.width > e.x && pL.y < e.y + e.height && pL.y + pL.height > e.y) {
+                    player.lasers.splice(i, 1); enemies.splice(j, 1); score += 25; 
+                    playEnemyExplosionSound(); 
+                    break; 
+                }
+            }
+        }
+        
+        for (let i = player.lasers.length - 1; i >= 0; i--) {
+            let pL = player.lasers[i];
+            for (let j = asteroids.length - 1; j >= 0; j--) {
+                let a = asteroids[j];
+                if (pL.x < a.x + a.width && pL.x + pL.width > a.x && pL.y < a.y + a.height && pL.y + pL.height > a.y) {
+                    player.lasers.splice(i, 1); asteroids.splice(j, 1); score += 15; 
+                    playEnemyExplosionSound(); 
+                    break; 
+                }
+            }
+        }
+        
+        for (let i = enemyLasers.length - 1; i >= 0; i--) {
+            let eL = enemyLasers[i];
+            if (eL.x < player.x + player.width && eL.x + eL.width > player.x && eL.y < player.y + player.height && eL.y + eL.height > player.y) {
+                enemyLasers.splice(i, 1); takeDamage();
+            }
+        }
+        for (let i = 0; i < asteroids.length; i++) {
+            let a = asteroids[i];
+            if (a.x < player.x + player.width && a.x + a.width > player.x && a.y < player.y + player.height && a.y + a.height > player.y) {
+                takeDamage(); a.vy *= -1; a.vx *= -1;
+            }
+        }
+    }
+
+    function draw() {
+        if (gameState === 'MEDIA_PLAYING') return;
+
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = '16px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+
+        if (gameState === 'START_MENU') {
+            if (nwsLogoImg.complete && nwsLogoImg.naturalWidth !== 0) {
+                let targetW = 300; 
+                let targetH = (nwsLogoImg.naturalHeight / nwsLogoImg.naturalWidth) * targetW;
+                ctx.drawImage(nwsLogoImg, canvas.width / 2 - targetW / 2, 100, targetW, targetH);
+            }
+
+            ctx.fillStyle = 'blue'; ctx.font = '24px Arial, sans-serif';
+            ctx.fillText('PRESENTS', canvas.width / 2, 280);
+
+            if (spaceShootLogoImg.complete && spaceShootLogoImg.naturalWidth !== 0) {
+                let targetW = 400; 
+                let targetH = (spaceShootLogoImg.naturalHeight / spaceShootLogoImg.naturalWidth) * targetW;
+                ctx.drawImage(spaceShootLogoImg, canvas.width / 2 - targetW / 2, 330, targetW, targetH);
+            }
+            
+            if (Math.floor(Date.now() / 500) % 2 === 0) {
+                ctx.fillStyle = 'red'; ctx.font = '20px "Press Start 2P", monospace';
+                ctx.fillText('PRESS SPACE OR R TO START', canvas.width / 2, 580);
+            }
+
+            ctx.fillStyle = 'cyan'; ctx.font = '12px "Press Start 2P", monospace';
+            let sY = 660;
+            ctx.fillText('ARROWS/JOYSTICK : Navigate | SPACE (FIRE) : Shoot', canvas.width / 2, sY);
+            ctx.fillText('V : Change View | CTRL+P : Pause | ESC : Quit', canvas.width / 2, sY + 30);
+            ctx.fillText('R / SPACE : Start Game | H : High Scores', canvas.width / 2, sY + 60);
+            ctx.fillText('Q : Exit to Arcade Menu', canvas.width / 2, sY + 90);
+        }
+
+        if (gameState === 'ARCADE_MENU') {
+            ctx.fillStyle = 'white'; ctx.font = '30px "Press Start 2P", monospace';
+            ctx.fillText('--- ARCADE MENU ---', canvas.width / 2, canvas.height / 2 - 50);
+            ctx.fillStyle = 'red'; ctx.font = '16px "Press Start 2P", monospace';
+            ctx.fillText('PRESS FIRE TO RETURN TO GAME', canvas.width / 2, canvas.height / 2 + 50);
+        }
+
+        if (gameState === 'PLAYING' || gameState === 'ENTER_NAME' || gameState === 'PAUSED') {
+            
+            if (playerImg.complete && (!player.isInvulnerable || Math.floor(Date.now() / 100) % 2 === 0)) {
+                ctx.drawImage(playerImg, player.x, player.y, player.width, player.height);
+            }
+
+            enemies.forEach(e => {
+                let cI;
+                if (e.type === 'green') cI = greenEnemyImg;
+                else if (e.type === 'blue') cI = blueEnemyImg;
+                else if (e.type === 'red') cI = redEnemyImg;
+                else if (e.type === 'grey') cI = greyEnemyImg;
+                else if (e.type === 'red_spider') cI = redSpiderImg;
+                else if (e.type === 'gold_spider') cI = goldSpiderImg;
+                else if (e.type === 'blue_spider') cI = blueSpiderImg;
+                if (cI && cI.complete) ctx.drawImage(cI, e.x, e.y, e.width, e.height);
+            });
+
+            asteroids.forEach(a => { if (asteroidImg.complete) ctx.drawImage(asteroidImg, a.x, a.y, a.width, a.height); });
+
+            let baseLevel = ((currentLevel - 1) % 4) + 1;
+            player.lasers.forEach(l => {
+                if (baseLevel === 4) {
+                    if (sideBlueLaserImg.complete) ctx.drawImage(sideBlueLaserImg, l.x, l.y, l.width, l.height);
+                } else {
+                    if (blueLaserImg.complete) ctx.drawImage(blueLaserImg, l.x, l.y, l.width, l.height);
+                }
+            });
+
+            enemyLasers.forEach(l => {
+                if (l.isBlob) {
+                    if (purpleBlobImg.complete) ctx.drawImage(purpleBlobImg, l.x, l.y, l.width, l.height);
+                } else {
+                    if (enemyLaserImg.complete) ctx.drawImage(enemyLaserImg, l.x, l.y, l.width, l.height);
+                }
+            });
+
+            if (lifeIconImg.complete) {
+                for (let i = 0; i < lives; i++) ctx.drawImage(lifeIconImg, 20 + (i * 28), canvas.height - 50, 25, 30);
+            }
+            
+            ctx.fillStyle = 'red'; ctx.textAlign = 'right';
+            ctx.fillText(score, canvas.width - 20, canvas.height - 25);
+            ctx.textAlign = 'left';
+            ctx.fillStyle = 'yellow';
+            ctx.fillText('LVL ' + currentLevel, 20, 30);
+            
+            if (isDemo) {
+                ctx.fillStyle = 'white'; ctx.textAlign = 'center';
+                if (Math.floor(Date.now() / 500) % 2 === 0) ctx.fillText('DEMO PLAY', canvas.width / 2, 30);
+            }
+
+            ctx.textAlign = 'center';
+            if (levelTransition) {
+                ctx.fillStyle = 'white'; ctx.font = '22px "Press Start 2P", monospace';
+                ctx.fillText('LEVEL ' + currentLevel + ' COMPLETE', canvas.width / 2, canvas.height / 2);
+            }
+        }
+
+        if (gameState === 'PAUSED') {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'yellow'; ctx.font = '40px "Press Start 2P", monospace';
+            ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2);
+            ctx.font = '16px "Press Start 2P", monospace';
+            ctx.fillText('PRESS CTRL+P TO RESUME', canvas.width / 2, canvas.height / 2 + 50);
+        }
+
+        if (gameState === 'ENTER_NAME') {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'white'; 
+            ctx.font = '22px "Press Start 2P", monospace';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 80);
+            ctx.fillStyle = 'red';
+            ctx.fillText('ENTER INITIALS', canvas.width / 2, canvas.height / 2 - 20);
+            
+            ctx.font = '40px "Press Start 2P", monospace';
+            for (let i = 0; i < 3; i++) {
+                ctx.fillStyle = (i === currentInitialIndex && Math.floor(Date.now() / 250) % 2 === 0) ? 'yellow' : 'white';
+                ctx.fillText(initials[i], canvas.width / 2 - 50 + (i * 50), canvas.height / 2 + 50);
+            }
+        }
+
+        if (gameState === 'HIGH_SCORE') {
+            if (highScoreBgImg.complete && highScoreBgImg.naturalWidth !== 0) {
+                ctx.drawImage(highScoreBgImg, 0, 0, canvas.width, canvas.height);
+            } else {
+                ctx.fillStyle = '#0a1e3f'; 
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'white'; 
+                ctx.fillText('HIGH SCORES', canvas.width / 2, 100);
+            }
+
+            ctx.textAlign = 'left';
+            ctx.font = '20px "Press Start 2P", monospace';
+            
+            highScores.forEach((hs, index) => {
+                ctx.fillStyle = 'red';
+                let yOffset = 230 + (index * 40); 
+                if (index < 10) { 
+                    ctx.fillText(`${index + 1}. ${hs.name}`, canvas.width / 2 - 150, yOffset);
+                    ctx.textAlign = 'right';
+                    ctx.fillText(`${hs.score}`, canvas.width / 2 + 150, yOffset);
+                    ctx.textAlign = 'left';
+                }
+            });
+
+            ctx.fillStyle = 'white'; ctx.textAlign = 'center'; ctx.font = '14px "Press Start 2P", monospace';
+            if (Math.floor(Date.now() / 500) % 2 === 0) {
+                ctx.fillText(isDemo ? 'DEMO MODE' : 'PRESS FIRE OR ESC TO RETURN', canvas.width / 2, canvas.height - 80);
+            }
+        }
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    loop();
+</script>
+
+</body>
+</html>
