@@ -177,7 +177,7 @@
 
         let targetBGM = null;
 
-        if (gameState === 'START_MENU' || gameState === 'HIGH_SCORE' || gameState === 'ARCADE_MENU') {
+        if (gameState === 'START_MENU' || gameState === 'HIGH_SCORE') {
             targetBGM = bgmMenu;
         } else if (gameState === 'MEDIA_PLAYING') {
             if (mediaGif.src.includes('Get_Ready') || mediaGif.src.includes('Game_Over')) {
@@ -340,7 +340,11 @@
             highScoreTimer = 0;
             updateBGM();
         }
-        if (e.code === 'KeyQ') { gameState = 'ARCADE_MENU'; updateBGM(); }
+        
+        // REDIRECT TO MAIN ARCADE MENU HUB
+        if (e.code === 'KeyQ') { 
+            window.location.href = 'https://tymnewell.github.io/Space-Shoot-arcade-menu/';
+        }
         
         if (e.code === 'Digit1') jumpToLevel(11);
         if (e.code === 'Digit2') jumpToLevel(12);
@@ -473,7 +477,7 @@
                 updateBGM();
             }
         }
-        else if (gameState === 'HIGH_SCORE' || gameState === 'ARCADE_MENU') {
+        else if (gameState === 'HIGH_SCORE') {
             if (fire && inputCooldown <= 0) {
                 isDemo = false;
                 idleTimer = 0;
@@ -532,7 +536,7 @@
     }
 
     function takeDamage() {
-        if (player.isInvulnerable || isDemo) return; // Prevent damage entirely during demo
+        if (player.isInvulnerable || isDemo) return; 
         
         lives -= 1;
         playSound(sfxExplod01); 
@@ -729,13 +733,6 @@
             ctx.fillText('V : Change View | CTRL+P : Pause | ESC : Quit', canvas.width / 2, sY + 30);
             ctx.fillText('R / SPACE : Start Game | H : High Scores', canvas.width / 2, sY + 60);
             ctx.fillText('Q : Exit to Arcade Menu', canvas.width / 2, sY + 90);
-        }
-
-        if (gameState === 'ARCADE_MENU') {
-            ctx.fillStyle = 'white'; ctx.font = '30px "Press Start 2P", monospace';
-            ctx.fillText('--- ARCADE MENU ---', canvas.width / 2, canvas.height / 2 - 50);
-            ctx.fillStyle = 'red'; ctx.font = '16px "Press Start 2P", monospace';
-            ctx.fillText('PRESS FIRE TO RETURN TO GAME', canvas.width / 2, canvas.height / 2 + 50);
         }
 
         if (gameState === 'PLAYING' || gameState === 'ENTER_NAME' || gameState === 'PAUSED') {
